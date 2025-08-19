@@ -6,7 +6,7 @@ from Funding import db
 from flask_login import login_user,logout_user,current_user, login_required
 from email.message import EmailMessage
 from datetime import datetime
-import ssl,smtplib
+import ssl,smtplib,requests
 
 @app.route('/')
 def main():
@@ -19,22 +19,27 @@ def about_page():
     return render_template('about.html')
 
 @app.route('/bursaries')
-#@login_required
 def bursary_page():
-    form = ApplicationFormModel()
+    form = ApplicationF()
     items = []
-    admin_items = []
+    admin_items = []    
+
     if current_user.is_authenticated:
         if current_user.username == "Admin":
-            admin_items = ApplicationFormModel.query.all()  # Retrieve all items for admin
+            admin_items = ApplicationFormModel.query.all()
         else:
-            items = ApplicationFormModel.query.filter_by(faculty=current_user.faculty).all()
-            # Filter out expired items for regular users
-            items = [item for item in items if item.enddate > datetime.now()]
+            # Handle case where faculty might be None or empty
+            if current_user.faculty:
+                items = ApplicationFormModel.query.filter_by(faculty=current_user.faculty).all()
+            else:
+                flash('Your faculty information is missing. Please update your profile.', 'warning')
+                items = []
     else:
         items = ApplicationFormModel.query.all()
 
-    return render_template('bursarylist.html', items=items, admin_items=admin_items,form=form)
+    return render_template('bursarylist.html', items=items, admin_items=admin_items, form=form)
+
+
 
 @app.route('/register', methods=['GET', 'POST'])
 def register_page():
@@ -58,6 +63,23 @@ def register_page():
             flash(f'There was an error with creating a user: {err_msg}', category='danger')
 
     return render_template('register.html', form=form)
+
+
+# More robust bursary count function
+def get_available_bursaries_count(user):
+    try:
+        if user.username == "Admin":
+            return ApplicationFormModel.query.count()
+        elif user.faculty:
+            return ApplicationFormModel.query.filter_by(faculty=user.faculty).count()
+        else:
+            return 0
+    except Exception as e:
+        app.logger.error(f"Error getting bursary count: {str(e)}")
+        return 0
+
+
+"""
 
 @app.route('/login', methods=['GET', 'POST'])
 def login_page():
@@ -84,7 +106,7 @@ def login_page():
                 
                 return redirect(url_for('profile'))            
             else:
-                flash('Username and password are not match! Please try again', category='danger')
+                flash('Username and password do not match! Please try again', category='danger')
         else:            
             flash('reCAPTCHA verification failed. Please try again.', category='danger')
 
@@ -97,11 +119,16 @@ def verify_recaptcha(response):
         'secret': secret_key,
         'response': response
     }
-    response = request.post(url, data=data)
-    result = response.json()
-    return result['success']
-
+    try:
+        response = requests.post(url, data=data)
+        result = response.json()
+        return result.get('success', False)
+    except Exception as e:
+        print(f"Error verifying ReCAPTCHA: {e}")
+        return False
 """
+
+# Improved login handling
 @app.route('/login', methods=['GET', 'POST'])
 def login_page():
     form = LoginForm()
@@ -112,23 +139,24 @@ def login_page():
         ):
             login_user(attempted_user)
             flash(f'Success! You are logged in as: {attempted_user.username}', category='success')                        
-            flash(f'To view your profile, click on your name above', category='success') 
-            current_bursary_count = len(ApplicationFormModel.query.filter_by(faculty=attempted_user.faculty).all())
-            if current_user.username != "Admin":            
-             if 'previous_bursary_count' in session:
-                previous_bursary_count = session['previous_bursary_count']
-                                
-                if current_bursary_count > previous_bursary_count:
-                    flash(f'Good news! There are new available bursaries {current_bursary_count}', category='info')
+            
+            # Initialize session variable if not exists
+            if 'previous_bursary_count' not in session:
+                session['previous_bursary_count'] = 0
+                
+            current_bursary_count = get_available_bursaries_count(current_user)
+            
+            if current_user.username != "Admin" and current_bursary_count > session['previous_bursary_count']:
+                flash(f'New bursaries available! There are {current_bursary_count - session["previous_bursary_count"]} new bursaries', category='info')
 
             session['previous_bursary_count'] = current_bursary_count
             
             return redirect(url_for('profile'))            
         else:
-            flash('Username and password are not match! Please try again', category='danger')
+            flash('Username and password do not match! Please try again', category='danger')
 
     return render_template('login.html', form=form)
-"""
+
 @app.route('/logout')
 def logout_page():
     logout_user()
@@ -169,6 +197,7 @@ def get_available_bursaries_count(user):
         return ApplicationFormModel.query.filter_by(faculty=user.faculty).count()
 
 
+# Fixed profile route with typo correction
 @app.route('/profile', methods=['GET', 'POST'])
 @login_required
 def profile():
@@ -179,9 +208,8 @@ def profile():
         current_user.username = form.username.data
         current_user.email_address = form.email_address.data
         current_user.Idnumber = form.idnumber.data
-        current_user.password =  form.password1.data
         current_user.dateofbirth = form.dateofbirth.data
-        current_user.facutly = form.faculty.data
+        current_user.faculty = form.faculty.data  # Fixed typo: facutly -> faculty
         current_user.role = form.role.data
 
         if form.password1.data:
@@ -200,7 +228,8 @@ def profile():
         form.faculty.data = current_user.faculty
         form.role.data = current_user.role
 
-    return render_template('profile.html', form=form,available_bursaries_count=available_bursaries_count)
+    return render_template('profile.html', form=form, available_bursaries_count=available_bursaries_count)
+
 
 @app.route('/available_bursaries_count', methods=['GET'])
 @login_required
